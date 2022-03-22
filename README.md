@@ -28,8 +28,17 @@ sudo nano /etc/hosts
 And add following in hosts file
 
 ```
+127.0.1.1 meetings.mydomain.com jitsimeet
 127.0.0.1 localhost
-x.x.x.x meetings.mydomain.com```
+x.x.x.x meetings.mydomain.com
+# The following lines are desirable for IPv6 capable hosts
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+ff02::3 ip6-allhosts
+```
 Where ```x.x.x.x``` is your public IP.
 
 Add Fully Qualified Domain Name (FQDN)
