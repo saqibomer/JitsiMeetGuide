@@ -96,69 +96,153 @@ First create a site
 Add following configuration. Make sure you update ssl path and server name. 
 
 ```
+server_names_hash_bucket_size 64;
+
+types {
+# nginx's default mime.types doesn't include a mapping for wasm
+    application/wasm     wasm;
+}
 server {
       listen 80;
       listen [::]:80;
       server_name  meetings.mydomain.com;
-      rewrite ^ https://$http_host$request_uri? permanent;	# force redirect http to https
+      rewrite ^ https://$http_host$request_uri? permanent;      # force redirect http to https
   }
-  server {
-      listen 443 ssl http2;
-      listen   [::]:443 ssl http2;
-      server_name meetings.mydomain.com;
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name meetings.mydomain.com;
 
-      ssl on;
-      ssl_certificate /home/ssl/my.ssl.crt;            # path to your cacert.pem
-      ssl_certificate_key /home/ssl/key;	# path to your privkey.pem
+    # Mozilla Guideline v5.4, nginx 1.17.7, OpenSSL 1.1.1d, intermediate configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
 
-      # global SSL options with Perfect Forward Secrecy (PFS) high strength ciphers
-      # first. PFS ciphers are those which start with ECDHE which means (EC)DHE
-      # which stands for (Elliptic Curve) Diffie-Hellman Ephemeral.
-      ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-      ssl_protocols TLSv1.2 TLSv1.3;
-      ssl_session_timeout 1d;
-      ssl_session_cache shared:MozSSL:10m;  # about 40000 sessions
-      resolver 8.8.8.8;
-      ssl_stapling on;
-      ssl_stapling_verify on;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;  # about 40000 sessions
+    ssl_session_tickets off;
 
-      # this are optional but recommended Security Headers
-      # thats the HSTS Header - it will enforce that all connections regarding this host and the subdomains will only used with encryption
-      add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
-      # this tells the browser that when click on links in the chat / pad, the referrer is only set when the link points to hosts site and encrypted
-      add_header Referrer-Policy strict-origin;
-      # this tells the browser that jitsi can't be embedded in a Frame
-      add_header X-Frame-Options "DENY";
-      add_header X-Content-Type-Options nosniff;
-      add_header X-XSS-Protection "1; mode=block";
-      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; block-all-mixed-content";
-      # List of Browser-Features which are allowed / denied for this Site
-    add_header Feature-Policy "geolocation 'none'; camera 'self'; microphone 'self'; speaker 'self'; autoplay 'none'; battery 'none'; accelerometer 'none'; autoplay 'none'; payment 'none';";
+    add_header Strict-Transport-Security "max-age=63072000" always;
+    set $prefix "";
 
+	ssl_certificate /home/dev-user/ssl/meetings.mydomain.com.crt;            # path to your cacert.pem
+     ssl_certificate_key /home/dev-user/ssl/meetings.mydomain.com.key;
 
-      root /srv/meetings.mydomain.com;
-      index index.html;
-    
-      location ~ ^/(?!(http-bind|external_api\.|xmpp-websocket))([a-zA-Z0-9=_äÄöÖüÜß\?\-]+)$ {
-          rewrite ^/(.*)$ / break;
-      }
-      # BOSH
-      location /http-bind {
-          proxy_pass      http://localhost:5280/http-bind;
-          proxy_set_header X-Forwarded-For $remote_addr;
-          proxy_set_header Host $http_host;
-      }
-      # xmpp websockets
-      location /xmpp-websocket {
-          proxy_pass http://localhost:5280;
-          proxy_http_version 1.1;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection "upgrade";
-          proxy_set_header Host $host;
-          tcp_nodelay on;
-      }
- }
+    root /usr/share/jitsi-meet;
+
+    # ssi on with javascript for multidomain variables in config.js
+    ssi on;
+    ssi_types application/x-javascript application/javascript;
+
+    index index.html index.htm;
+    error_page 404 /static/404.html;
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/x-icon application/octet-stream application/wasm;
+    gzip_vary on;
+    gzip_proxied no-cache no-store private expired auth;
+    gzip_min_length 512;
+
+    location = /config.js {
+        alias /etc/jitsi/meet/meetings.mydomain.com-config.js;
+    }
+
+    location = /external_api.js {
+        alias /usr/share/jitsi-meet/libs/external_api.min.js;
+    }
+
+    # ensure all static content can always be found first
+    location ~ ^/(libs|css|static|images|fonts|lang|sounds|connection_optimization|.well-known)/(.*)$
+    {
+        add_header 'Access-Control-Allow-Origin' '*';
+        alias /usr/share/jitsi-meet/$1/$2;
+
+        # cache all versioned files
+        if ($arg_v) {
+            expires 1y;
+        }
+    }
+
+    # BOSH
+    location = /http-bind {
+        proxy_pass http://127.0.0.1:5280/http-bind?prefix=$prefix&$args;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Host $http_host;
+    }
+
+    # xmpp websockets
+    location = /xmpp-websocket {
+        proxy_pass http://127.0.0.1:5280/xmpp-websocket?prefix=$prefix&$args;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $http_host;
+        tcp_nodelay on;
+    }
+
+    # colibri (JVB) websockets for jvb1
+    location ~ ^/colibri-ws/default-id/(.*) {
+        proxy_pass http://127.0.0.1:9090/colibri-ws/default-id/$1$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        tcp_nodelay on;
+    }
+
+    # load test minimal client, uncomment when used
+    #location ~ ^/_load-test/([^/?&:'"]+)$ {
+    #    rewrite ^/_load-test/(.*)$ /load-test/index.html break;
+    #}
+    #location ~ ^/_load-test/libs/(.*)$ {
+    #    add_header 'Access-Control-Allow-Origin' '*';
+    #    alias /usr/share/jitsi-meet/load-test/libs/$1;
+    #}
+
+    location ~ ^/([^/?&:'"]+)$ {
+        try_files $uri @root_path;
+    }
+
+    location @root_path {
+        rewrite ^/(.*)$ / break;
+    }
+
+    location ~ ^/([^/?&:'"]+)/config.js$
+    {
+        set $subdomain "$1.";
+        set $subdir "$1/";
+
+        alias /etc/jitsi/meet/meetings.mydomain.com-config.js;
+    }
+
+    # BOSH for subdomains
+    location ~ ^/([^/?&:'"]+)/http-bind {
+        set $subdomain "$1.";
+        set $subdir "$1/";
+        set $prefix "$1";
+
+        rewrite ^/(.*)$ /http-bind;
+    }
+
+    # websockets for subdomains
+    location ~ ^/([^/?&:'"]+)/xmpp-websocket {
+        set $subdomain "$1.";
+        set $subdir "$1/";
+        set $prefix "$1";
+
+        rewrite ^/(.*)$ /xmpp-websocket;
+    }
+
+    # Anything that didn't match above, and isn't a real file, assume it's a room name and redirect to /
+    location ~ ^/([^/?&:'"]+)/(.*)$ {
+        set $subdomain "$1.";
+        set $subdir "$1/";
+        rewrite ^/([^/?&:'"]+)/(.*)$ /$2;
+    }
+}
+
  ```
+ Make sure you rename domain name to you own domain in above configurations.
+ 
  Hit command + c or Control + c to exit. Save before exiting. 
 
 ## Restart 
